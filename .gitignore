@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.remote_id
+audit_log.jsonl
+error_host.log
+error_controller.log
+nodes.json
+cloudflared.exe
+*.log
