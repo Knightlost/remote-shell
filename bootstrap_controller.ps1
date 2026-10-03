@@ -2,7 +2,22 @@
 # Run this with: iex (irm 'https://raw.githubusercontent.com/Knightlost/remote-shell/main/bootstrap_controller.ps1')
 
 $ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'   # Makes downloads MUCH faster
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+function Fast-Download($url, $dest) {
+    try {
+        (New-Object System.Net.WebClient).DownloadFile($url, $dest)
+        return $true
+    } catch {
+        try {
+            Invoke-WebRequest $url -OutFile $dest -UseBasicParsing
+            return $true
+        } catch {
+            return $false
+        }
+    }
+}
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -22,19 +37,13 @@ $BASE_URL = "https://raw.githubusercontent.com/Knightlost/remote-shell/main"
 
 # ── Step 1: Download Python files ──
 Write-Host "[1/4] Downloading files from GitHub..." -ForegroundColor Yellow
-$ctrlFiles = @(
-    "connect.py",
-    "bridge_mcp.py"
-)
+$ctrlFiles = @("connect.py", "bridge_mcp.py")
 
 foreach ($f in $ctrlFiles) {
-    Write-Host "  Downloading $f..." -ForegroundColor Gray -NoNewline
-    try {
-        Invoke-WebRequest "$BASE_URL/$f" -OutFile "$workDir\$f" -UseBasicParsing
-        Write-Host " OK" -ForegroundColor Green
-    } catch {
-        Write-Host " FAILED: $_" -ForegroundColor Red
-    }
+    Write-Host "  $f..." -ForegroundColor Gray -NoNewline
+    $ok = Fast-Download "$BASE_URL/$f" "$workDir\$f"
+    if ($ok) { Write-Host " OK" -ForegroundColor Green }
+    else { Write-Host " FAILED" -ForegroundColor Red }
 }
 
 # ── Step 2: Find / Install Python ──
@@ -77,7 +86,7 @@ if (-not $pyExe) {
 if (-not $pyExe) {
     Write-Host "  Downloading Python 3.12 installer..." -ForegroundColor Yellow
     $inst = "$env:TEMP\python_installer.exe"
-    Invoke-WebRequest "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" -OutFile $inst -UseBasicParsing
+    Fast-Download "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" $inst | Out-Null
     Start-Process $inst -ArgumentList "/quiet","InstallAllUsers=0","PrependPath=1","Include_pip=1" -Wait
     Remove-Item $inst -Force -ErrorAction SilentlyContinue
     $env:PATH = [Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [Environment]::GetEnvironmentVariable("PATH","User")
@@ -93,11 +102,11 @@ Write-Host "  [OK] Python: $pyExe" -ForegroundColor Green
 
 # ── Step 3: Install packages ──
 Write-Host ""
-Write-Host "[3/4] Installing Python packages (first run ~1 min)..." -ForegroundColor Yellow
+Write-Host "[3/4] Checking Python packages..." -ForegroundColor Yellow
 
 $packages = @("httpx", "mcp", "pydantic-settings")
 foreach ($pkg in $packages) {
-    Write-Host "  pip install $pkg..." -ForegroundColor Gray -NoNewline
+    Write-Host "  $pkg..." -ForegroundColor Gray -NoNewline
     & $pyExe -m pip install $pkg --quiet --disable-pip-version-check 2>&1 | Out-Null
     Write-Host " OK" -ForegroundColor Green
 }

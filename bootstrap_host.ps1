@@ -93,23 +93,93 @@ Write-Host "  [OK] $pyExe" -ForegroundColor Green
 
 # Step 3: Install packages
 Write-Host ""
-Write-Host "[3/4] Installing Python packages..." -ForegroundColor Yellow
+Write-Host "[3/4] Checking Python packages..." -ForegroundColor Yellow
 foreach ($pkg in @("fastapi","uvicorn","pydantic-settings","httpx","mcp")) {
     Write-Host "  $pkg..." -ForegroundColor Gray -NoNewline
     & $pyExe -m pip install $pkg --quiet --disable-pip-version-check 2>&1 | Out-Null
     Write-Host " OK" -ForegroundColor Green
 }
 
-# Download cloudflared (skip if already exists)
+# Step 3b: Setup cloudflared
 Write-Host ""
+Write-Host "[3b] Checking Cloudflare Tunnel (cloudflared)..." -ForegroundColor Yellow
 $cfPath = "$workDir\cloudflared.exe"
+
+function Test-CloudflaredValid($p) {
+    if (-not $p -or -not (Test-Path $p)) { return $false }
+    try {
+        if ((Get-Item $p).Length -lt 25000000) { return $false }
+        $v = & $p --version 2>&1
+        if ($LASTEXITCODE -eq 0) { return $true }
+    } catch {}
+    return $false
+}
+
+# Clean up corrupted or incomplete local cloudflared.exe
 if (Test-Path $cfPath) {
-    Write-Host "  cloudflared: already exists (skip)" -ForegroundColor Green
+    if (-not (Test-CloudflaredValid $cfPath)) {
+        Write-Host "  Removing incomplete/corrupt cloudflared.exe..." -ForegroundColor Yellow
+        Remove-Item $cfPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if (Test-CloudflaredValid $cfPath) {
+    Write-Host "  cloudflared: ready" -ForegroundColor Green
 } else {
-    Write-Host "  Downloading cloudflared (~50MB)..." -ForegroundColor Gray -NoNewline
-    $ok = Fast-Download "https://github.com/cloudflare/cloudflared/releases/download/2025.4.0/cloudflared-windows-amd64.exe" $cfPath
-    if ($ok) { Write-Host " OK" -ForegroundColor Green }
-    else { Write-Host " WARN (will use system cloudflared)" -ForegroundColor Yellow }
+    # Check if system has a working cloudflared
+    $sysCandidates = @(
+        "cloudflared",
+        "C:\Program Files (x86)\cloudflared\cloudflared.exe",
+        "C:\Program Files\cloudflared\cloudflared.exe",
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Links\cloudflared.exe"
+    )
+    $sysFound = $null
+    foreach ($cand in $sysCandidates) {
+        $resolved = (Get-Command $cand -ErrorAction SilentlyContinue).Source
+        if (-not $resolved) { $resolved = $cand }
+        if (Test-CloudflaredValid $resolved) {
+            $sysFound = $resolved
+            break
+        }
+    }
+
+    if ($sysFound) {
+        Write-Host "  Found system cloudflared at: $sysFound (copying...)" -ForegroundColor Green
+        Copy-Item $sysFound $cfPath -Force
+    } else {
+        Write-Host "  Downloading cloudflared (~55MB, showing progress)..." -ForegroundColor Cyan
+        $cfUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+        $cfTmp = "$cfPath.part"
+        if (Test-Path $cfTmp) { Remove-Item $cfTmp -Force -ErrorAction SilentlyContinue }
+
+        $downloaded = $false
+        $curlExe = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+        if ($curlExe) {
+            try {
+                & $curlExe -# -L --fail --retry 3 $cfUrl -o $cfTmp
+                if ($LASTEXITCODE -eq 0 -and (Test-CloudflaredValid $cfTmp)) {
+                    $downloaded = $true
+                }
+            } catch {}
+        }
+
+        if (-not $downloaded) {
+            try {
+                Fast-Download $cfUrl $cfTmp | Out-Null
+                if (Test-CloudflaredValid $cfTmp) {
+                    $downloaded = $true
+                }
+            } catch {}
+        }
+
+        if ($downloaded) {
+            Move-Item -Path $cfTmp -Destination $cfPath -Force
+            Write-Host "  [OK] cloudflared downloaded successfully" -ForegroundColor Green
+        } else {
+            Remove-Item $cfTmp -Force -ErrorAction SilentlyContinue
+            Write-Host "  [WARN] Failed to download cloudflared. remote_host.py will attempt fallback." -ForegroundColor Yellow
+        }
+    }
 }
 
 # Step 4: Run

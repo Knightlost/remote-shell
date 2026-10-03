@@ -40,23 +40,90 @@ from config import settings, ensure_api_key
 
 import shutil
 
+def is_valid_cloudflared(path: str) -> bool:
+    """Verifies that the cloudflared executable exists, is non-empty, and runs without error."""
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        if os.path.getsize(path) < 20 * 1024 * 1024:
+            return False
+        res = subprocess.run([path, "--version"], capture_output=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
 def get_cloudflared_bin():
     local_cf = os.path.join(os.path.dirname(__file__), "cloudflared.exe")
+
+    # If local file exists, check if it's a valid working binary
     if os.path.exists(local_cf):
-        return local_cf
+        if is_valid_cloudflared(local_cf):
+            return local_cf
+        else:
+            print("  [!] Warning: Local cloudflared.exe is incomplete/corrupted. Removing...")
+            try:
+                os.remove(local_cf)
+            except Exception:
+                pass
+
+    # Check system PATH
     found = shutil.which("cloudflared")
-    if found:
+    if found and is_valid_cloudflared(found):
         return found
+
+    # Check common system installation locations
     candidates = [
-        local_cf,
         r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
         r"C:\Program Files\cloudflared\cloudflared.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links\cloudflared.exe"),
     ]
     for c in candidates:
-        if os.path.exists(c):
+        if is_valid_cloudflared(c):
             return c
-    return "cloudflared"
+
+    # If still not found, download automatically
+    print("  [*] Downloading working cloudflared binary...")
+    cf_url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+    tmp_cf = local_cf + ".tmp"
+    if os.path.exists(tmp_cf):
+        try:
+            os.remove(tmp_cf)
+        except Exception:
+            pass
+
+    downloaded = False
+    try:
+        subprocess.run(["curl.exe", "-#", "-L", "--fail", "--retry", "3", cf_url, "-o", tmp_cf], check=True)
+        if is_valid_cloudflared(tmp_cf):
+            downloaded = True
+    except Exception:
+        pass
+
+    if not downloaded:
+        try:
+            urllib.request.urlretrieve(cf_url, tmp_cf)
+            if is_valid_cloudflared(tmp_cf):
+                downloaded = True
+        except Exception:
+            pass
+
+    if downloaded:
+        if os.path.exists(local_cf):
+            try:
+                os.remove(local_cf)
+            except Exception:
+                pass
+        os.rename(tmp_cf, local_cf)
+        return local_cf
+
+    # Cleanup failed temp file
+    if os.path.exists(tmp_cf):
+        try:
+            os.remove(tmp_cf)
+        except Exception:
+            pass
+
+    raise RuntimeError("Could not find or download a valid cloudflared executable.")
 
 CLOUDFLARED_BIN = get_cloudflared_bin()
 
